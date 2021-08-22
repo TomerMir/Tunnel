@@ -619,7 +619,7 @@ namespace TunnelUtils
         internal void AppendFramePrefix(long dataLength, bool mask)
         {
             _buffer[_iCurrLocation++] = 0x82;  //Fin = 1; Opcode: Data - binary (2)
-            byte maskBit = mask ? 0x80 : 0x00;
+            byte maskBit = mask ? (byte)0x80 : (byte)0x00;
 
             if (dataLength <= 0x7D)
             {
