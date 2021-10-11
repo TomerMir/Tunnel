@@ -44,8 +44,7 @@ namespace TunnelUtils
                 }
                 Logger.Debug("Error: Cant remove connection with id " + id.ToString());
             }
-            Logger.Info("Removed #" + id.ToString());
-            Logger.Debug("Removed connection with id " + id.ToString() + " from the dictionary");
+            Logger.Debug("Removed #" + id.ToString());
 
         }
 
@@ -74,7 +73,7 @@ namespace TunnelUtils
                 _locker.ExitReadLock();
                 Logger.Debug("Error: Cant message connection with id " + message.ID.ToString());
             }
-            Logger.Debug("Sent message to connection with id " + message.ID.ToString());
+            Logger.Trace("Sent message to connection with id " + message.ID.ToString());
         }
 
         public static int GetNumberOfConnections()

@@ -2,102 +2,129 @@
 using System.IO;
 using System.Threading;
 using TunnelUtils;
-using System.CommandLine;
-using System.CommandLine.Invocation;
 using Titanium.Web.Proxy;
 using Titanium.Web.Proxy.Models;
 using System.Net;
-using System.CommandLine.Parsing;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Configuration;
+using System.Linq;
+using System.Text;
+using Titanium.Web.Proxy.Exceptions;
 
 namespace TunnelClient
 {
+
+    public class EndpointSetting
+    {
+        public string Host { get; set; }
+        public int Port { get; set; }
+
+        public DnsEndPoint DnsEndPoint { 
+            get { return new DnsEndPoint(Host, Port); }
+        }
+
+        public override string ToString()
+        {
+            return $"Host: {Host}  Port: {Port}";
+        }
+
+        public bool IsValid()
+        {
+            return !string.IsNullOrWhiteSpace(Host) && Port > 0 && Port < ushort.MaxValue;
+        }
+
+        public string Authority
+        {
+            get { return $"{Host}:{Port}"; }
+        }
+    }
 
     class Program
     {
         static void Main(string[] args)
         {
-
-            // Create a root command with some options
-            var rootCommand = new RootCommand
-            {
-                new Option<string>(new string[] {"--tunnel-endpoint","--tep" })
-                {
-                    Description = "IP Address and port of the tunnel server (<ip>:<port>)",
-                    IsRequired = true,
-                },
-                new Option<string>(new string[] {"--external-proxy-endpoint","--epe" }, "External proxy endpoint (<ip>:<port>)"),
-
-                new Option<string>(new string[] {"--key","--k" }, getDefaultValue: () => Consts.TEST_SECRET_KEY)
-                {
-                    Description = "Client's key (used for authenticating the client)",
-                }
-
-
-                //new Option<FileInfo>(
-                //    new string[] {"--client-cert","--cc" },
-                //    "Certificate file"),
-            };
-
-            rootCommand.Description = "Tunnel Client";
-            //Note that the parameters of the handler method are matched according to the names of the options
-            rootCommand.Handler = CommandHandler.Create<string, string, string>(StartClient);
-
-            rootCommand.Invoke(args);
-
+            Configuration.Init(args);
+            StartClient();
         }
 
 
-        static void StartClient(string externalProxyEndpoint, string tunnelEndpoint, string key)
-        {
 
-            IPEndPoint proxyEndpoint = null;
-            if (externalProxyEndpoint == null)
+
+
+
+        
+
+        static void StartClient()
+        {
+            EndPoint proxyEndpoint = null;
+            if (Configuration.InternalProxyEndpoint.Host == null)
             {
                 Logger.Info("No external proxy was provided, using internal proxy");
                 var proxyServer = new ProxyServer(false, false, false);
                 var internalProxyEndpoint = new ExplicitProxyEndPoint(IPAddress.Loopback, 0, decryptSsl: false);
+
+                //This is a dummy certificate to eliminate exceptions when trying to generate a certificate.
+                //This proxy is not set to decrypt connections, therefore, there is no need in root certificate. 
+                internalProxyEndpoint.GenericCertificate = new System.Security.Cryptography.X509Certificates.X509Certificate2();
                 proxyServer.AddEndPoint(internalProxyEndpoint);
-                proxyServer.Start();
+                proxyServer.ExceptionFunc += ProxyException;
+                if (Configuration.UseSystemProxyConfig)
+                {
+                    proxyServer.ForwardToUpstreamGateway = true;
+                    Logger.Info($"Using system proxy config for upstream connections");
+                }
+
+
+                try
+                {
+                    proxyServer.Start();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Fatal(ex, "Failed to start embedded proxy");
+                    Environment.Exit(-1);
+                }
                 proxyEndpoint = new IPEndPoint(internalProxyEndpoint.IpAddress, internalProxyEndpoint.Port);
                 Logger.Info($"Internal Proxy Endpoint: {proxyEndpoint}");
             }
             else
             {
-                if (! IPEndPoint.TryParse(externalProxyEndpoint, out proxyEndpoint))
-                {
-                    Logger.Fatal("Invalid value for --external-proxy-endpoint: An invalid IP EndPoint was specified.");
-                    Environment.Exit(-1);
-                }
-                else
-                {
-                    Logger.Info($"External Proxy Endpoint: {proxyEndpoint}");
-                }
+                proxyEndpoint = Configuration.InternalProxyEndpoint.DnsEndPoint;
+                Logger.Info($"External Proxy Endpoint: {proxyEndpoint}");
             }
-            
+
             //if (tunnelEndpoint == null)
             //{
             //    tunnelEndpoint = Consts.TUNNEL_ENDPOINT;
             //}
 
-            if (!IPEndPoint.TryParse(tunnelEndpoint, out IPEndPoint endPointTtunnel))
+            if (!Configuration.TunnelServerEndpoint.IsValid())
             {
-                Logger.Fatal("Invalid value for --tunnel-endpoint: An invalid IP EndPoint was specified.");
+                Logger.Fatal("Invalid value for TunnelServerEndpoint was specified.");
                 Environment.Exit(-1);
             }
-            Logger.Info($"Tunnel Endpoint {endPointTtunnel}");
+            Logger.Info($"Tunnel Endpoint {Configuration.TunnelServerEndpoint}");
 
-
-
-            //Console.WriteLine($"The value for --bool-option is: {tunnelPort}");
-            //Console.WriteLine($"The value for --file-option is: {clientCert?.Exists.ToString() ?? "null"}");
             Stream TunnelStream = null;
 
             try
             {
-                TunnelStream = TunnelConnection.ConnectToServer(endPointTtunnel, key);
+                const int nTrials = 3;
+                int iTrial = 0;
+                do
+                {
+                    iTrial++;
+                    TunnelStream = TunnelConnection.ConnectToServer();
+                    if (TunnelStream == null && iTrial < nTrials)
+                    {
+                        Logger.Info("Can't connect to server... retrying");
+                    }
+                }
+                while (TunnelStream == null && iTrial < nTrials);
+
                 if (TunnelStream == null)
                 {
-                    Logger.Info("Can't connect to server...");
+                    Logger.Info("Failed to connect to server - exiting");
                     return;
                 }
 
@@ -105,7 +132,7 @@ namespace TunnelClient
                 {
                     while (true)
                     {
-                        Logger.Info("Number of connections: " + ConnectionsDictionary.GetNumberOfConnections().ToString());
+                        Logger.Debug("Number of connections: " + ConnectionsDictionary.GetNumberOfConnections().ToString());
                         Thread.Sleep(7500);
                     }
                 });
@@ -129,7 +156,7 @@ namespace TunnelClient
                         }
                         continue;
                     }
-                    Logger.Debug("Recived message from tunnel, type: " + ((MessageType)buffer[0]).ToString());
+                    Logger.Trace("Received message from tunnel, type: " + ((MessageType)buffer[0]).ToString());
                     Message message = Message.Recive(buffer);
                     if (message.Type == MessageType.TunnelClosed)
                     {
@@ -141,7 +168,7 @@ namespace TunnelClient
                         }
                         continue;
                     }
-                    Logger.Debug("Recived message from tunnel, type: " + ((MessageType)buffer[0]).ToString() + ", Id : #" + message.ID);
+                    Logger.Trace("Received message from tunnel, type: " + ((MessageType)buffer[0]).ToString() + ", Id : #" + message.ID);
                     switch (message.Type)
                     {
                         case MessageType.Open:
@@ -154,7 +181,7 @@ namespace TunnelClient
 
                         case MessageType.Message:
                             ConnectionsDictionary.SendMessage(message);
-                            Logger.Debug("Sent message to #" + message.ID.ToString());
+                            Logger.Trace("Sent message to #" + message.ID.ToString());
                             break;
                     }
                 }
@@ -173,5 +200,40 @@ namespace TunnelClient
                 }
             }
         }
+
+        static void ProxyException(Exception exception)
+        {
+            string logMessage = GetLogMessage(exception);
+            Logger.Debug("Proxy exception: " + logMessage);
+        }
+
+
+        static string GetLogMessage(Exception exception)
+        {
+            StringBuilder message = new StringBuilder(exception.Message);
+            Exception lastValidException = exception;
+            Exception e = exception.InnerException;
+            int depthLimit = 5;
+            while (e != null && depthLimit > 0)
+            {
+                lastValidException = e;
+                message.Append(" | InnerException: " + e.Message);
+                e = e.InnerException;
+                depthLimit--;
+            }
+
+            string logMessage;
+            if (exception is ProxyHttpException pEx)
+            {
+
+                logMessage = $"Unhandled Proxy Exception. UserData = {pEx.Session?.UserData}, URL = {pEx.Session?.HttpClient.Request.RequestUri} Exception = {message}";
+            }
+            else
+            {
+                logMessage = $"Unhandled Exception: {lastValidException.GetType()} {message}";
+            }
+            return logMessage;
+        }
+
     }
 }

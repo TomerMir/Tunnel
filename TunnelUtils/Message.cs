@@ -33,7 +33,7 @@ namespace TunnelUtils
                 {
                     wsf.AppendData(Data.Value);
                 }
-                Logger.Debug("Serialized message");
+                Logger.Trace("Serialized message");
                 return wsf.GetFrameBuffer();
             }
             catch (Exception ex)

@@ -2,11 +2,8 @@
 using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.IO;
-using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
-using System.Text;
-using System.Threading;
 using TunnelUtils;
 
 namespace TunnelServer
@@ -29,15 +26,20 @@ namespace TunnelServer
                     Description = "Tunnel listen port",
                     IsRequired = true,
                 },
+                new Option(new string[] {"--require-client-cert","--rcc" })
+                {
+                    Description = "If provided, the tunnel server will require a TLS client certificate",
+                },
                 new Option<string>(new string[] {"--key-hash","--kh" }, getDefaultValue: () => Consts.TEST_SECRET_KEY_HASH)
                 {
                     Description = "If provided, the tunnel server will validate the client's key",
-                }
+                },
+
             };
 
             rootCommand.Description = "Tunnel Client";
             //Note that the parameters of the handler method are matched according to the names of the options
-            rootCommand.Handler = CommandHandler.Create<int, int, string>(StartServer);
+            rootCommand.Handler = CommandHandler.Create<int, int, string, bool>(StartServer);
 
 
             var genKeyCommand = new Command("gen-key")
@@ -77,7 +79,7 @@ namespace TunnelServer
             }
         }
 
-        static void StartServer(int tunnelPort, int proxyPort, string keyHash)
+        static void StartServer(int tunnelPort, int proxyPort, string keyHash, bool requireClientCert)
         {
             Logger.Info($"Tunnel port: {tunnelPort}");
             Logger.Info($"Proxy port: {proxyPort}");
@@ -88,7 +90,8 @@ namespace TunnelServer
 
             try
             {
-                Listeners = new ServerLitseners(tunnelPort, proxyPort, keyHash);
+                Listeners = new ServerLitseners(tunnelPort, proxyPort, requireClientCert, keyHash);
+
                 TunnelStream = Listeners.LitsenForTunnelClient();
 
                 Listeners.LitsenForConnections();
@@ -108,7 +111,7 @@ namespace TunnelServer
                         continue;
                     }
 
-                    Logger.Debug("Recived message from tunnel, type: " + ((MessageType)buffer[0]).ToString());
+                    Logger.Trace("Received message from tunnel, type: " + ((MessageType)buffer[0]).ToString());
 
                     Message message = Message.Recive(buffer);
                     if (message.Type == MessageType.TunnelClosed)
@@ -117,7 +120,7 @@ namespace TunnelServer
                         TunnelStream = Listeners.NewTunnelConnection();
                         continue;
                     }
-                    Logger.Debug("Recived message from tunnel, type: " + ((MessageType)buffer[0]).ToString() + ", Id : #" + message.ID);
+                    Logger.Trace("Received message from tunnel, type: " + ((MessageType)buffer[0]).ToString() + ", Id : #" + message.ID);
                     switch (message.Type)
                     {
 
@@ -128,7 +131,7 @@ namespace TunnelServer
                         case MessageType.Message:
                             ConnectionsDictionary.SendMessage(message);
 
-                            Logger.Debug("Sent message to #" + message.ID.ToString());
+                            Logger.Trace("Sent message to #" + message.ID.ToString());
                             break;
                     }
                 }

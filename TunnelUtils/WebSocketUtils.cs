@@ -103,17 +103,22 @@ namespace TunnelUtils
 
         enum EndOfHeadersState : byte { Start, CR, CRLF, CRLFCR };
 
-        const int HEADERS_TOO_LARGE = -1;
-        const int CONNECTION_CLOSED = -2;
+        public const int HEADERS_TOO_LARGE = -1;
+        public const int CONNECTION_CLOSED = -2;
 
-        static int ReadHeadersSection(Stream st, byte[] headersBuff)
+        public static int ReadHeadersSection(Stream st, byte[] headersBuff)
         {
             int buffLength = headersBuff.Length;
             EndOfHeadersState state = EndOfHeadersState.Start;
             for (int i = 0; i < headersBuff.Length; i++)
             {
                 int n = st.Read(headersBuff, i, 1);
-                if (n == 0) return CONNECTION_CLOSED;
+                if (n == 0)
+                {
+                    Logger.Error($"Reading HTTP Headers: Connection closed before end of headers. (after {i} bytes)");
+                    LogBuffer(headersBuff, 0, i);
+                    return CONNECTION_CLOSED;
+                }
                 switch (state)
                 {
                     case EndOfHeadersState.Start:
@@ -138,6 +143,8 @@ namespace TunnelUtils
                         break;
                 }
             }
+            Logger.Error($"Reading HTTP Headers: Headers section exceeded the limit ({headersBuff.Length})");
+            LogBuffer(headersBuff);
             return HEADERS_TOO_LARGE;
         }
 
@@ -219,23 +226,31 @@ namespace TunnelUtils
             sb.Append($"Authorization: Bearer {token}\r\n");
             sb.Append("\r\n");
 
+
             //Write the handshake request
+            Logger.Debug("WebSocketHandshake: Writing upgrade request..  ");
             stream.Write(Encoding.ASCII.GetBytes(sb.ToString()));
 
             //Read the handshake response
             const int RespBuffSize = 4096;
             byte[] respBuffer = new byte[RespBuffSize];
 
+            Logger.Debug("WebSocketHandshake: reading response..");
             int iEndOfHeaders = ReadHeadersSection(stream, respBuffer);
-            if (iEndOfHeaders == -1)
+
+            Logger.Debug("WebSocketHandshake: reading response - done.");
+
+            if (iEndOfHeaders == HEADERS_TOO_LARGE || iEndOfHeaders == CONNECTION_CLOSED)
             {
-                //Response headers too large
+                Logger.Error("WebSocketHandshake: failed to read handshake response..");
                 return false;
             }
 
             string firstLine = GetFirstLine(new ArraySegment<byte>(respBuffer, 0, iEndOfHeaders), out int iNextHeader);
             if (firstLine != "HTTP/1.1 101 Switching Protocols")
             {
+                Logger.Error("WebSocketHandshake: Unexpected response first line: " + firstLine);
+                LogBuffer(respBuffer, 0, iEndOfHeaders);
                 //Request was not accepted by the server
                 return false;
             }
@@ -262,6 +277,7 @@ namespace TunnelUtils
                             if (expectedAccept != header.Item2)
                             {
                                 //The accept does not match the key that was sent in the request
+                                Logger.Error("WebSocketHandshake: Unexpected Sec-WebSocket-Accept: " + header.Item2);
                                 return false;
                             }
                             WebSocketAcceptReceived = true;
@@ -269,6 +285,7 @@ namespace TunnelUtils
                         case ServerHeadersEnum.Connection:
                             if (header.Item2 != "Upgrade")
                             {
+                                Logger.Error("WebSocketHandshake: Unexpected Connection header: " + header.Item2);
                                 return false;
                             }
                             ConnectionReceived = true;
@@ -276,6 +293,7 @@ namespace TunnelUtils
                         case ServerHeadersEnum.Upgrade:
                             if (header.Item2 != "websocket")
                             {
+                                Logger.Error("WebSocketHandshake: Unexpected Upgrade header: " + header.Item2);
                                 return false;
                             }
                             UpgradeReceived = true;
@@ -283,11 +301,29 @@ namespace TunnelUtils
                     }
                 }
             }
+
+            if (!WebSocketAcceptReceived)
+            {
+                Logger.Error("WebSocketHandshake: Missing header: Sec-WebSocket-Accept");
+            }
+            if (!ConnectionReceived)
+            {
+                Logger.Error("WebSocketHandshake: Missing header: Connection");
+            }
+            if (!UpgradeReceived)
+            {
+                Logger.Error("WebSocketHandshake: Missing header: Upgrade");
+            }
+
+
             if (!WebSocketAcceptReceived || !ConnectionReceived || !UpgradeReceived)
             {
                 //Missing required header
+                LogBuffer(respBuffer, 0, iEndOfHeaders);
                 return false;
             }
+
+            Logger.Debug("WebSocketHandshake: Completed successfully");
             return true;
         }
 
@@ -312,12 +348,22 @@ namespace TunnelUtils
 
         }
 
+        public static void LogBuffer(byte[] buff, int offset = 0)
+        {
+            LogBuffer(buff, offset, buff.Length - offset);
+        }
+        public static void LogBuffer(byte[] buff, int offset, int length)
+        {
+            Logger.Debug("Accepted data (base64): " + Convert.ToBase64String(buff, offset, length));
+        }
 
         public static bool ServerHandshake(Stream stream, string tokenHash)
         {
             //Read the handshake request
             const int ReqBuffSize = 4096;
             byte[] reqBuffer = new byte[ReqBuffSize];
+
+            Logger.Debug("WebSocketHandshake: Waiting for upgrade request..  ");
 
             int iEndOfHeaders = ReadHeadersSection(stream, reqBuffer);
             if (iEndOfHeaders == HEADERS_TOO_LARGE)
@@ -330,10 +376,13 @@ namespace TunnelUtils
             {
                 return false;
             }
+            Logger.Debug("WebSocketHandshake: upgrade request received - start processing it..");
 
             string firstLine = GetFirstLine(new ArraySegment<byte>(reqBuffer, 0, iEndOfHeaders), out int iNextHeader);
             if (firstLine != "GET /tunnel HTTP/1.1")
             {
+                Logger.Debug("WebSocketHandshake: Invalid upgrade request received.  First line: " + firstLine);
+                LogBuffer(reqBuffer, 0, iEndOfHeaders);
                 //Get request is expected
                 stream.Write(GetErrorResp(400));
             }
@@ -363,6 +412,7 @@ namespace TunnelUtils
                         case ClientHeadersEnum.Connection:
                             if (header.Item2 != "Upgrade")
                             {
+                                Logger.Error("WebSocketHandshake: Unexpected Connection header: " + header.Item2);
                                 stream.Write(GetErrorResp(400));
                                 return false;
                             }
@@ -371,6 +421,7 @@ namespace TunnelUtils
                         case ClientHeadersEnum.WebSocketVer:
                             if (header.Item2 != "13")
                             {
+                                Logger.Error("WebSocketHandshake: Unexpected Sec-WebSocket-Version header: " + header.Item2);
                                 stream.Write(GetErrorResp(400));
                                 return false;
                             }
@@ -379,6 +430,7 @@ namespace TunnelUtils
                         case ClientHeadersEnum.Authorization:
                             if (! header.Item2.StartsWith("Bearer "))
                             {
+                                Logger.Error("WebSocketHandshake: Unexpected Authorization header: " + header.Item2);
                                 stream.Write(GetErrorResp(401));
                                 return false;
                             }
@@ -389,6 +441,7 @@ namespace TunnelUtils
                                 var keyHash = hasher.ComputeHash(tokenBytes);
                                 if (GeneralUtils.GetHexString(keyHash) != tokenHash)
                                 {
+                                    Logger.Error("WebSocketHandshake: Invalid key: " + header.Item2);
                                     stream.Write(GetErrorResp(401));
                                     return false;
                                 }
@@ -402,16 +455,31 @@ namespace TunnelUtils
 
             if (!AuthorizationReceived)
             {
+                Logger.Error("WebSocketHandshake: Missing authorization header");
                 stream.Write(GetErrorResp(401));
                 return false;
             }
-
+            if (!WebSocketKeyReceived)
+            {
+                Logger.Error("WebSocketHandshake: Missing key");
+            }
+            if (!WebSocketVerReceived)
+            {
+                Logger.Error("WebSocketHandshake: Missing Sec-WebSocket-Version header");
+            }
+            if (!ConnectionReceived)
+            {
+                Logger.Error("WebSocketHandshake: Missing Connection header");
+            }
             if (!WebSocketKeyReceived || !WebSocketVerReceived || !ConnectionReceived)
             {
                 //Missing required header
+                LogBuffer(reqBuffer, 0, iEndOfHeaders);
                 stream.Write(GetErrorResp(400));
                 return false;
             }
+
+            Logger.Debug("WebSocketHandshake: Request parsed successfully");
 
             //Create the server response
             StringBuilder sb = new StringBuilder(2048);
@@ -422,7 +490,9 @@ namespace TunnelUtils
             sb.Append("\r\n");
 
             //Write the handshake request
-            stream.Write(Encoding.ASCII.GetBytes(sb.ToString()));
+            byte[] respBytes = Encoding.ASCII.GetBytes(sb.ToString());
+            stream.Write(respBytes);
+            Logger.Debug($"WebSocketHandshake: Response sent successfully ({respBytes} bytes)");
 
             return true;
         }
@@ -432,7 +502,7 @@ namespace TunnelUtils
 
         internal static string GetSecWebSocketAccept(string clientKeyStr)
         {
-            // SHA1 is aused according to RFC 6455 only for hashing. 
+            // SHA1 is used according to RFC 6455 only for hashing. 
             using (SHA1 sha1 = SHA1.Create())
             {
                 string concatStr = string.Concat(clientKeyStr, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
