@@ -55,12 +55,12 @@ namespace TunnelClient
             return Encoding.UTF8.GetBytes(sb.ToString());
         }
 
-        public static Stream ConnectToServer()
+        public static Stream ConnectToServer(bool printConnectionFailureError = true)
         {
             try
             {
                 Socket tunnelSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.IP);
-                Logger.Debug("Initialized socket");
+                //Logger.Debug("Initialized socket");
                 NetworkStream tunnelStream;
                 //If tunnel should path through proxy, here is the place to establish the connection
                 if (Configuration.OutgoingProxyEndpoint.IsValid())
@@ -135,8 +135,10 @@ namespace TunnelClient
             }
             catch (Exception ex)
             {
-                
-                Logger.Error(ex, "Can't connect to server...");
+                if (printConnectionFailureError)
+                {
+                    Logger.Error(ex, "Can't connect to server...");
+                }
                 return null;
             }
         }

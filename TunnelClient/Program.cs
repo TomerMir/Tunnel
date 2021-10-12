@@ -109,18 +109,24 @@ namespace TunnelClient
 
             try
             {
-                const int nTrials = 3;
+                const int RetryIntervalInSeconds = 15;
                 int iTrial = 0;
                 do
                 {
-                    iTrial++;
-                    TunnelStream = TunnelConnection.ConnectToServer();
-                    if (TunnelStream == null && iTrial < nTrials)
+                    //Print the error after 20 trials (5 minutes)
+                    bool printError = iTrial % 20 == 0;
+                    TunnelStream = TunnelConnection.ConnectToServer(printError);
+                    if (TunnelStream == null)
                     {
-                        Logger.Info("Can't connect to server... retrying");
+                        if (printError)
+                        {
+                            Logger.Info("Can't connect to server. keep trying...");
+                        }
+                        Thread.Sleep(TimeSpan.FromSeconds(RetryIntervalInSeconds));
                     }
+                    iTrial++;
                 }
-                while (TunnelStream == null && iTrial < nTrials);
+                while (TunnelStream == null);
 
                 if (TunnelStream == null)
                 {

@@ -1,6 +1,7 @@
 ﻿using NLog;
 using NLog.Config;
 using NLog.Targets;
+using NLog.Time;
 using System;
 namespace TunnelUtils
 {
@@ -8,6 +9,7 @@ namespace TunnelUtils
     {
         static Logger()
         {
+            TimeSource.Current = new FastUtcTimeSource();
             var config = new LoggingConfiguration();
             var consoleTarget = new ColoredConsoleTarget("console")
             {
@@ -27,7 +29,7 @@ namespace TunnelUtils
                 Name = "logfile",
                 Layout = "${date}|${threadid}|${level:uppercase=true}|${message}",
                 AutoFlush = true,
-                FileName = @"logs\tunnel.log",
+                FileName = @"${currentdir}\logs\tunnel.log",
                 ArchiveEvery = FileArchivePeriod.Day,
                 //ConcurrentWrites = true
             };
